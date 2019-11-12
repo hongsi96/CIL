@@ -15,12 +15,15 @@ import logging
 import os
 from tensorboardX import SummaryWriter
 import utils
+from statistics import mean
 from tqdm import tqdm
 
-filename='test_distil_herding'
+filename='checking'
+memory=100
 init_lr=0.1
 momentum=0.9
 wd=5e-4
+final=[]# final avg acc of tasks
 if not os.path.exists('experiments'):
     os.makedirs('experiments')
 
@@ -32,6 +35,8 @@ def adjust_learning_rate(optimizer,epoch, schedule):
             #print('lr decay from {} to {}'.format(param_group['lr'], param_group['lr'] * lrd))
             param_group['lr'] *= 0.1
 def get_performance(output, target):
+    #if 10 in target:
+    #    pdb.set_trace()
     acc = (output.max(1)[1] == target).to(torch.float).mean()
     return acc
 
@@ -63,19 +68,20 @@ model = torch.nn.DataParallel(model).cuda()
 
 cifar_train=dataset.custom_CIFAR('data', train=True, transform=transform_train, target_transform=None, download=True)
 cifar_test=dataset.custom_CIFAR('data', train=False, transform=transform_test, target_transform=None, download=True)
-cifar_train.seperate(class_num=100); cifar_test.seperate(class_num=100)
+cifar_train.seperate(class_num=100, memory=memory); cifar_test.seperate(class_num=100,memory=memory)
 
 model_classifier=model.module.classifier if isinstance(model, nn.DataParallel) else model.classifier
 seen=[]
 for n_task, task in enumerate(tasks):
     seen.extend(task)
     model_classifier.set_trainable(seen)
+    params=filter(lambda p: p.requires_grad, model.parameters())
     if n_task==0:
         cifar_train.select(cls=task); cifar_test.select(cls=seen)
         criterion = nn.CrossEntropyLoss(reduction='none', ignore_index=-1).cuda()
         train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=128,shuffle=True, num_workers=8)
         test_loader=torch.utils.data.DataLoader(cifar_test, batch_size=100,shuffle=True, num_workers=8)
-        optimizer = optim.SGD(model.parameters(), lr=init_lr, momentum=momentum, weight_decay=wd)
+        optimizer = optim.SGD(params, lr=init_lr, momentum=momentum, weight_decay=wd)
 
         for epoch in range(200):
             adjust_learning_rate(optimizer,epoch, schedule=[120, 160, 180])
@@ -115,7 +121,7 @@ for n_task, task in enumerate(tasks):
             #writer.add_scalar('Train/task_{}/loss'.format(n_task), loss_train.item()/len(cifar_train), epoch)
             
         torch.save(model.state_dict(), 'save/model_{}.t7'.format(n_task))
-        cifar_train.sampling(cls=task, mode='herding', model=model)
+        cifar_train.sampling(cls=task)#cifar_train.sampling(cls=task, mode='herding', model=model)
         prev_model=copy.deepcopy(model)
     else:
         #training
@@ -126,7 +132,7 @@ for n_task, task in enumerate(tasks):
 
         train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=128,shuffle=True, num_workers=8)
         test_loader=torch.utils.data.DataLoader(cifar_test, batch_size=100,shuffle=True, num_workers=8)
-        optimizer = optim.SGD(model.parameters(), lr=init_lr, momentum=momentum, weight_decay=wd)
+        optimizer = optim.SGD(params, lr=init_lr, momentum=momentum, weight_decay=wd)
         for epoch in range(180):
             adjust_learning_rate(optimizer,epoch, schedule=[120, 160, 170])
             model.train()
@@ -154,14 +160,15 @@ for n_task, task in enumerate(tasks):
                 acc_.update(acc.item(), data.size(0))
                 pbar.set_postfix(acc='{:5.2f}'.format(acc_.avg*100.), loss='{:.4f}'.format(loss_.avg))
             #writer.add_scalar('Train/task_{}/loss'.format(n_task), loss.item(), epoch)
-        cifar_train.sampling(cls=task, mode='herding', model=model)#cifar_train.sampling(cls=task)
+        cifar_train.sampling(cls=task)#cifar_train.sampling(cls=task, mode='herding', model=model)
         #finetuning
         cifar_train.select(cls=[])
         criterion = nn.CrossEntropyLoss(reduction='none', ignore_index=-1).cuda()
         print('Finetuning, memory:{}'.format(len(cifar_train)))
         train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=128,shuffle=True, num_workers=8)
         test_loader=torch.utils.data.DataLoader(cifar_test, batch_size=100,shuffle=True, num_workers=8) 
-        optimizer = optim.SGD(model_classifier.parameters(), lr=init_lr*0.1, momentum=momentum, weight_decay=wd)
+        params=filter(lambda p : p.requires_grad, model_classifier.parameters())
+        optimizer = optim.SGD(params, lr=init_lr*0.1, momentum=momentum, weight_decay=wd)
         for epoch in range(20):
             adjust_learning_rate(optimizer,epoch, schedule=[10,15])
             loss_train=0;loss_test=0
@@ -203,12 +210,19 @@ for n_task, task in enumerate(tasks):
         cifar_test.select(seen[tt*10:tt*10+10])    
         test_loader=torch.utils.data.DataLoader(cifar_test, batch_size=100,shuffle=True, num_workers=8)
         for ii, (data, label) in enumerate(test_loader):
+            acc_  = utils.AverageMeter()
             data=data.cuda();label=label.cuda()
             output=model(data)
-            acc = get_performance(output[:,seen], label)
+            #acc = get_performance(output[:,seen], label)
+            #if n_task>2 and tt>2:
+            #    pdb.set_trace()
+            acc = (output[:,seen].max(1)[1] == label).to(torch.float).mean()
             acc_.update(acc.item(), data.size(0))
         perform.append(acc_.avg)
+    perform.append(mean(perform))
+    final.append(mean(perform))
     logging.info(perform)  
+logging.info(mean(final))
 
         
 

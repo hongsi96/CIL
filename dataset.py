@@ -8,7 +8,8 @@ import random
 
 
 class custom_CIFAR(torchvision.datasets.CIFAR100):
-    def seperate(self, class_num):
+    def seperate(self, class_num, memory=2000):
+        self.num_mem=memory
         self.c_data=[]
         self.c_targets=[]
         for i in range(class_num):
@@ -29,8 +30,8 @@ class custom_CIFAR(torchvision.datasets.CIFAR100):
             self.data.extend(self.c_data[c])
             self.targets.extend(self.c_targets[c])
 
-        if self.train and len(self.memory) >0:
-            count=2000//len(self.memory)
+        if self.train and len(self.memory)>0 and self.num_mem>0:
+            count=self.num_mem//len(self.memory)
             #for mem in self.memory:
             for i, key in enumerate(self.memory.keys()):
                 #key : class label
