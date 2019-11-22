@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
+import pdb
 from utils import MultiHeadLinear, init_module
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -34,6 +35,12 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
         return out
 
+
+
+
+
+
+
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=100):
         super(ResNet, self).__init__()
@@ -46,7 +53,24 @@ class ResNet(nn.Module):
         #self.linear = nn.Linear(64, num_classes)
         self.classifier=MultiHeadLinear(64, num_classes)
         init_module(self)
-
+        ##sampler
+        self.samplers=nn.ModuleList([nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,kernel_size=3, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(64),
+            nn.Sigmoid()
+            ) for i in range(10)]
+        )
+        '''
+        self.sampler_fc=nn.Sequential(
+                nn.Linear(64, 16, bias=False),
+                nn.ReLU(inplace=True),
+                nn.Linear(16, 1, bias=False),
+                nn.Sigmoid()
+                )
+        '''
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
@@ -80,8 +104,35 @@ class ResNet(nn.Module):
         out = out.view(out.size(0), -1)
         return out
 
+    def part1(self,x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        return out
+    def part2(self,x):
+        out=F.avg_pool2d(x, x.size()[3])
+        out=out.view(out.size(0),-1)
+        out = self.classifier(out)
+        return out
 
+    def sampler(self, x, n_task):
+        out=self.samplers[n_task](x)
+        out = F.avg_pool2d(out, out.size()[3])
+        out = out.view(out.size(0), -1)
+        out = out.mean(1)
+        return out
 
+    def getout(self, x, n_task, sampling=False):
+        out1=self.part1(x)
+        avg=out1.mean(0).expand_as(out1)
+        out2=torch.cat((out1, avg.detach()), dim=1)
+        out2=self.sampler(out2, n_task).view(-1,1,1,1)
+        if sampling:
+            return out2
+        out2=out2*out1
+        out2=self.part2(out2)
+        return out2
 
 def resnet():
     return ResNet(BasicBlock, [5, 5, 5])

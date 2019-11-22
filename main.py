@@ -18,8 +18,8 @@ import utils
 from statistics import mean
 from tqdm import tqdm
 
-filename='checking'
-memory=100
+filename='checking'#'herding_no_norm'#filename='baseline2'
+memory=2000
 init_lr=0.1
 momentum=0.9
 wd=5e-4
@@ -29,16 +29,19 @@ if not os.path.exists('experiments'):
 
 logging.basicConfig(filename='./experiments/{}.txt'.format(filename), level=logging.DEBUG)
 
+def converter(task, label):
+    label=torch.tensor([task.index(element.item()) for element in label])
+    return label
 def adjust_learning_rate(optimizer,epoch, schedule):
     if epoch in schedule:
         for param_group in optimizer.param_groups:
             #print('lr decay from {} to {}'.format(param_group['lr'], param_group['lr'] * lrd))
             param_group['lr'] *= 0.1
 def get_performance(output, target):
-    #if 10 in target:
     #    pdb.set_trace()
     acc = (output.max(1)[1] == target).to(torch.float).mean()
     return acc
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 cudnn.benchmark = True
@@ -89,26 +92,40 @@ for n_task, task in enumerate(tasks):
             loss_train=0;loss_test=0
             loss_ = utils.AverageMeter();acc_  = utils.AverageMeter()
             pbar  = tqdm(train_loader, desc='T:{}, train {:d}'.format(n_task,epoch), ascii=True, ncols=80)
-            for data, label in pbar:#for ii, (data, label) in enumerate(train_loader):
+            for index, data, label in pbar:#for ii, (data, label) in enumerate(train_loader):
+                label=converter(tasks_c,label)
                 data=data.cuda(); label=label.cuda()
+                data.requires_grad=True
                 optimizer.zero_grad()
                 output=model(data)
+                #output=model.module.getout(data, n_task)
+
+                #out1=model.module.part1(data)
+                #avg=out1.mean(0).expand_as(out1)
+                #out2=torch.cat((out1, avg.detach()), dim=1)
+
+                #out3=model.module.sampler(out2).view(-1, 1, 1, 1)
+                #out3=out3*out1
+
+                #output=model.module.part2(out3)
+                #pdb.set_trace()
                  
                 loss=criterion(output[:,task], label).mean()
-                loss.backward(); optimizer.step()
+                loss.backward();optimizer.step()
+                #cifar_train.grad_storage(index, data.grad.detach(), label)#store input gradient info
 
                 acc = get_performance(output[:,task], label)
                 loss_.update((loss.mean()).item(), data.size(0))
                 acc_.update(acc.item(), data.size(0))
                 pbar.set_postfix(acc='{:5.2f}'.format(acc_.avg*100.), loss='{:.4f}'.format(loss_.avg))
-            
             #test
             if epoch%10==0:
                 model.eval()
                 loss_ = utils.AverageMeter();acc_  = utils.AverageMeter()
                 pbar  = tqdm(test_loader, desc='T:{}, test {:d}'.format(n_task,epoch), ascii=True, ncols=80)
                 with torch.no_grad():
-                    for data, label in pbar:
+                    for index, data, label in pbar:
+                        label=converter(tasks_c,label)
                         data=data.cuda(); label=label.cuda() 
                         output=model(data) 
                         loss=criterion(output[:,task], label).mean()
@@ -121,7 +138,10 @@ for n_task, task in enumerate(tasks):
             #writer.add_scalar('Train/task_{}/loss'.format(n_task), loss_train.item()/len(cifar_train), epoch)
             
         torch.save(model.state_dict(), 'save/model_{}.t7'.format(n_task))
-        cifar_train.sampling(cls=task)#cifar_train.sampling(cls=task, mode='herding', model=model)
+        cifar_train.sampling(cls=task, mode='herding', model=model)
+        #cifar_train.sampling(cls=task)
+        #cifar_train.sampling(cls=task, mode='attention', model=model)
+
         prev_model=copy.deepcopy(model)
     else:
         #training
@@ -139,12 +159,13 @@ for n_task, task in enumerate(tasks):
             cls_loss_train=0;dst_loss_train=0
             loss_ = utils.AverageMeter();acc_  = utils.AverageMeter()
             pbar  = tqdm(train_loader, desc='T:{}, train {:d}'.format(n_task,epoch), ascii=True, ncols=80)
-            for data, label in pbar:
+            for index, data, label in pbar:
+                label=converter(tasks_c,label)
                 data=data.cuda();label=label.cuda() 
-                
                 optimizer.zero_grad() 
                 output=model(data);prev_output=prev_model(data)
-                #cls
+                #output=model.module.getout(data, n_task)
+                #cls 
                 loss_c=criterion['cls'](output[:,seen], label).mean()
                 #dist 
                 output_pld=(output[:,seen[:-10]] / 2).log_softmax(dim=1)
@@ -160,7 +181,8 @@ for n_task, task in enumerate(tasks):
                 acc_.update(acc.item(), data.size(0))
                 pbar.set_postfix(acc='{:5.2f}'.format(acc_.avg*100.), loss='{:.4f}'.format(loss_.avg))
             #writer.add_scalar('Train/task_{}/loss'.format(n_task), loss.item(), epoch)
-        cifar_train.sampling(cls=task)#cifar_train.sampling(cls=task, mode='herding', model=model)
+        #cifar_train.sampling(cls=task)
+        cifar_train.sampling(cls=task, mode='herding', model=model)
         #finetuning
         cifar_train.select(cls=[])
         criterion = nn.CrossEntropyLoss(reduction='none', ignore_index=-1).cuda()
@@ -175,7 +197,8 @@ for n_task, task in enumerate(tasks):
             model.train()
             loss_ = utils.AverageMeter();acc_  = utils.AverageMeter()
             pbar  = tqdm(train_loader, desc='F:{}, train {:d}'.format(n_task,epoch), ascii=True, ncols=80)
-            for data, label in pbar: 
+            for index, data, label in pbar: 
+                label=converter(tasks_c,label)
                 data=data.cuda();label=label.cuda()
                 optimizer.zero_grad() 
                 output=model(data)
@@ -191,7 +214,8 @@ for n_task, task in enumerate(tasks):
             loss_ = utils.AverageMeter();acc_  = utils.AverageMeter()
             pbar  = tqdm(test_loader, desc='F:{}, test {:d}'.format(n_task,epoch), ascii=True, ncols=80)
             with torch.no_grad():
-                for data, label in pbar:
+                for index, data, label in pbar:
+                    label=converter(tasks_c,label)
                     data=data.cuda();label=label.cuda()
                     output=model(data)
                     loss=criterion(output[:,seen], label).mean()
@@ -209,8 +233,10 @@ for n_task, task in enumerate(tasks):
     for tt in range(n_task+1):
         cifar_test.select(seen[tt*10:tt*10+10])    
         test_loader=torch.utils.data.DataLoader(cifar_test, batch_size=100,shuffle=True, num_workers=8)
-        for ii, (data, label) in enumerate(test_loader):
-            acc_  = utils.AverageMeter()
+
+        acc_  = utils.AverageMeter()
+        for ii, (index, data, label) in enumerate(test_loader):
+            label=converter(tasks_c,label)
             data=data.cuda();label=label.cuda()
             output=model(data)
             #acc = get_performance(output[:,seen], label)
